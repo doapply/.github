@@ -1,0 +1,157 @@
+name: Simple Snyk monitor for SBT + Node + Python
+
+on:
+  workflow_call:
+    inputs:
+      SKIP_NODE:
+        type: boolean
+        required: false
+        default: false
+      SKIP_SBT:
+        type: boolean
+        required: false
+        default: false
+      SKIP_PYTHON:
+        type: boolean
+        required: false
+        default: true
+      SKIP_GO:
+        type: boolean
+        required: false
+        default: true
+      DEBUG:
+        type: string
+        required: false
+      EXCLUDE:
+        type: string
+        required: false
+        default: ""
+      ORG:
+        type: string
+        required: true
+      JAVA_VERSION:
+        type: string
+        required: false
+        default: "11"
+      NODE_VERSION_FILE:
+        type: string
+        required: false
+        default: ".nvmrc"
+      NODE_VERSION_OVERRIDE:
+        type: string
+        required: false
+      NODE_PACKAGE_JSON_FILES_MISSING_LOCK:
+        type: string
+        required: false
+        description: space separated list of package.json files that are missing lock files; require installation
+      PRUNE_DUPLICATES:
+        type: boolean
+        required: false
+        default: false
+      PYTHON_VERSION:
+        type: string
+        required: false
+      PIP_REQUIREMENTS_FILES:
+        type: string
+        required: false
+        description: space-separated list of requirements.txt file paths to install
+      PIPFILES:
+        type: string
+        required: false
+        description: space-separated list of Pipfile file paths to install
+      GO_VERSION_FILE:
+        type: string
+        required: false
+        default: go.mod
+      PROJECT_TAGS:
+        type: string
+        required: false
+        description: comma-separated list of key/value pairs for project tags, e.g. "team=devex,fun=true"
+    secrets:
+      SNYK_TOKEN:
+        required: true
+
+jobs:
+    security:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout branch
+              uses: actions/checkout@v3
+
+            - uses: snyk/actions/setup@0.3.0
+
+            - uses: actions/setup-node@v2
+              if: inputs.NODE_VERSION_OVERRIDE == '' && inputs.SKIP_NODE != true
+              with:
+                  node-version-file: ${{ inputs.NODE_VERSION_FILE }}
+
+            - uses: actions/setup-node@v2
+              if: inputs.NODE_VERSION_OVERRIDE != '' && inputs.SKIP_NODE != true
+              with:
+                  node-version: ${{ inputs.NODE_VERSION_OVERRIDE }}
+
+            - if: inputs.NODE_PACKAGE_JSON_FILES_MISSING_LOCK != ''
+              run: |
+                for file in ${{ inputs.NODE_PACKAGE_JSON_FILES_MISSING_LOCK }}   
+                do
+                  cd $(echo $file | sed "s/package\.json//")
+                  npm install
+                  cd -
+                done
+
+            - uses: actions/setup-java@v3
+              if: inputs.SKIP_SBT != true
+              with:
+                  java-version: ${{ inputs.JAVA_VERSION }}
+                  distribution: "adopt"
+
+            - uses: actions/setup-python@v4
+              if: inputs.SKIP_PYTHON != true
+              with:
+                python-version: ${{ inputs.PYTHON_VERSION }}
+
+            - if: inputs.SKIP_PYTHON != true
+              run: pip install pipenv
+
+            - if: inputs.PIP_REQUIREMENTS_FILES != ''
+              run: |
+               for file in ${{ inputs.PIP_REQUIREMENTS_FILES }}   
+               do
+                 pip install -r $file
+               done
+
+            - if: inputs.PIPFILES != ''
+              run: |
+                for file in ${{ inputs.PIPFILES }}   
+                do
+                  PIPENV_PIPFILE=$file
+                  pipenv install
+                done
+
+            - uses: actions/setup-go@v3
+              if: inputs.SKIP_GO != true
+              with:
+                  go-version-file: ${{ inputs.GO_VERSION_FILE }}
+
+            - name: Snyk monitor
+              run: |
+                projectTags="commit=${GITHUB_SHA}"
+                if [ -n "${PROJECT_TAGS}" ]
+                then
+                  projectTags="$projectTags,${PROJECT_TAGS}"
+                fi
+
+                snyk monitor \
+                  ${DEBUG_OPTION} \
+                  ${PRUNE_OPTION} \
+                  --all-projects \
+                  $([[ ${PYTHON_VERSION:0:2} == 3. ]] && echo "--command=python3") \
+                  --org="${{ inputs.ORG }}" \
+                  --exclude="${{ inputs.EXCLUDE }}" \
+                  --project-tags=${projectTags} --
+              env:
+                  SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+                  DEBUG_OPTION: ${{ inputs.DEBUG == 'true' && '-d' || '' }}
+                  PRUNE_OPTION: ${{ inputs.PRUNE_DUPLICATES == true && '-p' || '' }}
+                  PYTHON_VERSION: ${{inputs.PYTHON_VERSION}}
+                  PROJECT_TAGS: ${{inputs.PROJECT_TAGS}}
